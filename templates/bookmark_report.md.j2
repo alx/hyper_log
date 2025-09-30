@@ -1,0 +1,20 @@
+# Bookmark Report
+**Period:** {{ start_date }} to {{ end_date }}
+**Total Bookmarks:** {{ bookmarks|length }}
+
+---
+
+{% for bookmark in bookmarks %}
+## {{ loop.index }}. {{ bookmark.title or 'Untitled' }}
+
+**URL:** {{ bookmark.content.url }}
+**Created:** {{ bookmark.createdAt }}
+{% if bookmark.content.author %}**Author:** {{ bookmark.content.author }}  {% endif %}
+{% if bookmark.content.publisher %}**Publisher:** {{ bookmark.content.publisher }}  {% endif %}
+{% if bookmark.content.description %}**Description:** {{ bookmark.content.description }}  {% endif %}
+{% if bookmark.tags %}**Tags:** {{ bookmark.tags|map(attribute='name')|join(', ') }}  {% endif %}
+{% if bookmark.note %}**Note:** {{ bookmark.note }}  {% endif %}
+
+---
+
+{% endfor %}
