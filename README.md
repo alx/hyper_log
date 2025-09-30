@@ -1,4 +1,6 @@
-# Quick Compil
+## Hyper Log
+
+![Hyper Log](docs/logo.png)
 
 Fetch bookmarks from Karakeep, download videos via yt-dlp, compile to single MP4, generate report. Filters videos >3min.
 
