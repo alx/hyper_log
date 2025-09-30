@@ -67,77 +67,105 @@ parser.add_argument(
     type=str,
     default=datetime.now().isoformat()
 )
+parser.add_argument(
+    '--merge-only',
+    action='store_true',
+    help='Skip download steps and go directly to merging existing videos'
+)
 args = parser.parse_args()
 
 # Format dates
 formatted_end_date = datetime.fromisoformat(args.end_date).strftime('%Y_%m_%d')
-start_ts = datetime.fromisoformat(args.start_date).timestamp() * 1000
-end_ts = datetime.fromisoformat(args.end_date).timestamp() * 1000
 
-# Fetch bookmarks from Karakeep API
-response = requests.get(
-    f"{os.getenv('KARAKEEP_BASE_URL')}/api/v1/lists/{os.getenv('KARAKEEP_LIST_ID')}/bookmarks",
-    headers={'Authorization': f"Bearer {os.getenv('KARAKEEP_API_KEY')}"}
-).json()
+if not args.merge_only:
+    start_ts = datetime.fromisoformat(args.start_date).timestamp() * 1000
+    end_ts = datetime.fromisoformat(args.end_date).timestamp() * 1000
 
-# Save raw response
-Path('karakeep_response.json').write_text(__import__('json').dumps(response, indent=2))
+    # Fetch bookmarks from Karakeep API
+    response = requests.get(
+        f"{os.getenv('KARAKEEP_BASE_URL')}/api/v1/lists/{os.getenv('KARAKEEP_LIST_ID')}/bookmarks",
+        headers={'Authorization': f"Bearer {os.getenv('KARAKEEP_API_KEY')}"}
+    ).json()
 
-# Extract bookmarks
-bookmarks = response.get('bookmarks', [])
+    # Save raw response
+    Path('karakeep_response.json').write_text(__import__('json').dumps(response, indent=2))
 
-# Filter bookmarks by date range
-filtered_bookmarks = [
-    b for b in bookmarks
-    if start_ts <= datetime.fromisoformat(b['createdAt'].replace('Z', '+00:00')).timestamp() * 1000 <= end_ts
-]
+    # Extract bookmarks
+    bookmarks = response.get('bookmarks', [])
 
-# Extract URLs from filtered bookmarks
-urls = [
-    u for b in bookmarks
-    if start_ts <= datetime.fromisoformat(b['createdAt'].replace('Z', '+00:00')).timestamp() * 1000 <= end_ts
-    for u in re.findall(
-        r'https?://\S+',
-        b.get('content', {}).get('url', '') + ' ' + (b.get('title') or '')
-    )
-]
+    # Filter bookmarks by date range
+    filtered_bookmarks = [
+        b for b in bookmarks
+        if start_ts <= datetime.fromisoformat(b['createdAt'].replace('Z', '+00:00')).timestamp() * 1000 <= end_ts
+    ]
 
-# Create downloads directory
-Path(f'downloads/{formatted_end_date}').mkdir(parents=True, exist_ok=True)
+    # Extract URLs from filtered bookmarks
+    urls = [
+        u for b in bookmarks
+        if start_ts <= datetime.fromisoformat(b['createdAt'].replace('Z', '+00:00')).timestamp() * 1000 <= end_ts
+        for u in re.findall(
+            r'https?://\S+',
+            b.get('content', {}).get('url', '') + ' ' + (b.get('title') or '')
+        )
+    ]
 
-# Download videos using yt-dlp
-for url in urls:
+    # Create downloads directory
+    Path(f'downloads/{formatted_end_date}').mkdir(parents=True, exist_ok=True)
+
+    # Download videos using yt-dlp
+    for url in urls:
+        subprocess.run([
+            'yt-dlp',
+            '--cookies-from-browser', 'firefox',
+            '-o', f'downloads/{formatted_end_date}/%(id)s.%(ext)s',
+            url
+        ])
+
+    # Get all downloaded files and filter by duration (max 3 minutes)
+    all_files = sorted(Path(f'downloads/{formatted_end_date}').glob('*'))
+    files = []
+    for f in all_files:
+        result = subprocess.run([
+            'ffprobe',
+            '-v', 'error',
+            '-show_entries', 'format=duration',
+            '-of', 'default=noprint_wrappers=1:nokey=1',
+            str(f)
+        ], capture_output=True, text=True)
+        try:
+            duration = float(result.stdout.strip())
+            if duration <= 180:  # 3 minutes = 180 seconds
+                files.append(f)
+            else:
+                f.unlink()  # Delete videos longer than 3 minutes
+        except (ValueError, AttributeError):
+            files.append(f)  # Keep if duration can't be determined
+else:
+    # Skip to merging: use existing files in downloads directory
+    files = sorted(Path(f'downloads/{formatted_end_date}').glob('*'))
+    filtered_bookmarks = []
+
+# Re-encode all videos to uniform format (H.264/AAC/MP4)
+normalized_files = []
+for idx, f in enumerate(files):
+    normalized_path = Path(f'temp_normalized_{idx}.mp4')
     subprocess.run([
-        'yt-dlp',
-        '--cookies-from-browser', 'firefox',
-        '-o', f'downloads/{formatted_end_date}/%(id)s.%(ext)s',
-        url
+        'ffmpeg',
+        '-i', str(f),
+        '-c:v', 'libx264',
+        '-c:a', 'aac',
+        '-preset', 'fast',
+        '-crf', '23',
+        '-r', '30',
+        '-y',
+        str(normalized_path)
     ])
+    normalized_files.append(normalized_path)
 
-# Get all downloaded files and filter by duration (max 3 minutes)
-all_files = sorted(Path(f'downloads/{formatted_end_date}').glob('*'))
-files = []
-for f in all_files:
-    result = subprocess.run([
-        'ffprobe',
-        '-v', 'error',
-        '-show_entries', 'format=duration',
-        '-of', 'default=noprint_wrappers=1:nokey=1',
-        str(f)
-    ], capture_output=True, text=True)
-    try:
-        duration = float(result.stdout.strip())
-        if duration <= 180:  # 3 minutes = 180 seconds
-            files.append(f)
-        else:
-            f.unlink()  # Delete videos longer than 3 minutes
-    except (ValueError, AttributeError):
-        files.append(f)  # Keep if duration can't be determined
-
-# Create file list for ffmpeg
+# Create file list for ffmpeg using normalized files
 Path('filelist.txt').write_text('\n'.join(
     f"file '{str(f.resolve()).replace(chr(39), chr(39)+chr(92)+chr(39)+chr(39))}'"
-    for f in files
+    for f in normalized_files
 ))
 
 # Create compilation directory
@@ -162,6 +190,10 @@ subprocess.run([
     '-y',
     f'compilation/{formatted_end_date}.mp4'
 ])
+
+# Clean up temporary normalized files
+for f in normalized_files:
+    f.unlink()
 
 # Generate bookmark report
 template = Template(Path('templates/bookmark_report.md.j2').read_text())
