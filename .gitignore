@@ -18,6 +18,7 @@ downloads/
 compilation/
 karakeep_response.json
 filelist.txt
+temp_normalized_*.mp4
 
 # IDE
 .vscode/

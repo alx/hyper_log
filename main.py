@@ -72,10 +72,18 @@ parser.add_argument(
     action='store_true',
     help='Skip download steps and go directly to merging existing videos'
 )
+parser.add_argument(
+    '--tiktok',
+    action='store_true',
+    help='Generate video in TikTok format (1080x1920 portrait)'
+)
 args = parser.parse_args()
 
 # Format dates
 formatted_end_date = datetime.fromisoformat(args.end_date).strftime('%Y_%m_%d')
+
+# Set video dimensions based on platform
+width, height = (1080, 1920) if args.tiktok else (1920, 1080)
 
 if not args.merge_only:
     start_ts = datetime.fromisoformat(args.start_date).timestamp() * 1000
@@ -145,21 +153,23 @@ else:
     files = sorted(Path(f'downloads/{formatted_end_date}').glob('*'))
     filtered_bookmarks = []
 
-# Re-encode all videos to uniform format (H.264/AAC/MP4)
+# Re-encode all videos to uniform format (H.264/AAC/MP4) with consistent dimensions
 normalized_files = []
 for idx, f in enumerate(files):
     normalized_path = Path(f'temp_normalized_{idx}.mp4')
-    subprocess.run([
-        'ffmpeg',
-        '-i', str(f),
-        '-c:v', 'libx264',
-        '-c:a', 'aac',
-        '-preset', 'fast',
-        '-crf', '23',
-        '-r', '30',
-        '-y',
-        str(normalized_path)
-    ])
+    if not normalized_path.exists():
+        subprocess.run([
+            'ffmpeg',
+            '-i', str(f),
+            '-vf', f'scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2',
+            '-c:v', 'libx264',
+            '-c:a', 'aac',
+            '-preset', 'fast',
+            '-crf', '23',
+            '-r', '30',
+            '-y',
+            str(normalized_path)
+        ])
     normalized_files.append(normalized_path)
 
 # Create file list for ffmpeg using normalized files
@@ -176,6 +186,7 @@ subprocess.run([
     'ffmpeg',
     '-f', 'concat',
     '-safe', '0',
+    '-vsync', 'cfr',
     '-i', 'filelist.txt',
     '-c:v', 'libx264',
     '-preset', 'fast',
@@ -184,6 +195,7 @@ subprocess.run([
     '-b:a', '128k',
     '-r', '30',
     '-g', '30',
+    '-async', '1',
     '-avoid_negative_ts', 'make_zero',
     '-fflags', '+genpts',
     '-movflags', '+faststart',
