@@ -25,21 +25,25 @@ SOFTWARE.
 ---
 
 INDEX:
-  1. Load environment variables ...................... Line 56
-  2. Parse command line arguments .................... Line 59
-  3. Format dates .................................... Line 73
-  4. Fetch bookmarks from Karakeep API ............... Line 78
-  5. Save raw response ............................... Line 84
-  6. Extract bookmarks ............................... Line 87
-  7. Filter bookmarks by date range .................. Line 90
-  8. Extract URLs from filtered bookmarks ............ Line 96
-  9. Create downloads directory ...................... Line 106
- 10. Download videos using yt-dlp .................... Line 109
- 11. Filter videos by duration (max 3 min) ........... Line 118
- 12. Create file list for ffmpeg ..................... Line 137
- 13. Create compilation directory .................... Line 140
- 14. Compile videos using ffmpeg ..................... Line 143
- 15. Generate bookmark report ........................ Line 163
+  1. Load environment variables ...................... Line 59
+  2. Parse command line arguments .................... Line 62
+  3. Format dates .................................... Line 86
+  4. Fetch bookmarks from Karakeep API ............... Line 96
+  5. Save raw response ............................... Line 102
+  6. Extract bookmarks ............................... Line 105
+  7. Filter bookmarks by date range .................. Line 108
+  8. Extract URLs from filtered bookmarks ............ Line 114
+  9. Fetch URLs from Matrix room history ............. Line 124
+ 10. Deduplicate URLs from both sources .............. Line 153
+ 11. Create downloads directory ...................... Line 156
+ 12. Download videos using yt-dlp .................... Line 159
+ 13. Filter videos by duration (max 3 min) ........... Line 168
+ 14. Re-encode videos to uniform format .............. Line 192
+     Store normalized videos in downloads/{YYYY_MM_DD}/normalized/
+ 15. Create file list for ffmpeg ..................... Line 222
+ 16. Create compilation directory .................... Line 228
+ 17. Compile videos using ffmpeg ..................... Line 231
+ 18. Generate bookmark report ........................ Line 245
 """
 
 import os
@@ -117,8 +121,41 @@ if not args.merge_only:
         )
     ]
 
+    # Fetch URLs from Matrix room history
+    matrix_urls = []
+    if os.getenv('MATRIX_ACCESS_TOKEN'):
+        from_token = None
+
+        while True:
+            params = {
+                'access_token': os.getenv('MATRIX_ACCESS_TOKEN'),
+                'dir': 'b',
+                'limit': 100
+            }
+            if from_token:
+                params['from'] = from_token
+
+            matrix_resp = requests.get(
+                f"{os.getenv('MATRIX_HOMESERVER')}/_matrix/client/v3/rooms/{os.getenv('MATRIX_ROOM_ID')}/messages",
+                params=params
+            ).json()
+
+            for event in matrix_resp.get('chunk', []):
+                ts = event.get('origin_server_ts', 0)
+                if start_ts <= ts <= end_ts:
+                    body = event.get('content', {}).get('body', '')
+                    matrix_urls.extend(re.findall(r'https?://\S+', body))
+
+            from_token = matrix_resp.get('end')
+            if not from_token or (matrix_resp.get('chunk', [{}])[-1].get('origin_server_ts', 0) < start_ts):
+                break
+
+    # Deduplicate URLs from both sources
+    urls = list(set(urls + matrix_urls))
+
     # Create downloads directory
     Path(f'downloads/{formatted_end_date}').mkdir(parents=True, exist_ok=True)
+    Path(f'downloads/{formatted_end_date}/normalized').mkdir(parents=True, exist_ok=True)
 
     # Download videos using yt-dlp
     for url in urls:
@@ -156,21 +193,31 @@ else:
 # Re-encode all videos to uniform format (H.264/AAC/MP4) with consistent dimensions
 normalized_files = []
 for idx, f in enumerate(files):
-    normalized_path = Path(f'temp_normalized_{idx}.mp4')
+    print(f"{idx} - {f}")
+    normalized_path = Path(f'downloads/{formatted_end_date}/normalized/{f.name}')
     if not normalized_path.exists():
-        subprocess.run([
+        result = subprocess.run([
             'ffmpeg',
             '-i', str(f),
             '-vf', f'scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2',
+            '-af', 'aresample=async=1:first_pts=0',
             '-c:v', 'libx264',
             '-c:a', 'aac',
+            '-ar', '48000',
+            '-ac', '2',
+            '-b:a', '128k',
             '-preset', 'fast',
             '-crf', '23',
             '-r', '30',
+            '-fps_mode', 'cfr',
+            '-loglevel', 'error',
             '-y',
             str(normalized_path)
         ])
-    normalized_files.append(normalized_path)
+        if result.returncode != 0:
+            print(f"Warning: Failed to normalize {f}")
+    if normalized_path.exists():
+        normalized_files.append(normalized_path)
 
 # Create file list for ffmpeg using normalized files
 Path('filelist.txt').write_text('\n'.join(
@@ -186,26 +233,13 @@ subprocess.run([
     'ffmpeg',
     '-f', 'concat',
     '-safe', '0',
-    '-vsync', 'cfr',
     '-i', 'filelist.txt',
-    '-c:v', 'libx264',
-    '-preset', 'fast',
-    '-crf', '23',
-    '-c:a', 'aac',
-    '-b:a', '128k',
-    '-r', '30',
-    '-g', '30',
-    '-async', '1',
-    '-avoid_negative_ts', 'make_zero',
+    '-c', 'copy',
     '-fflags', '+genpts',
     '-movflags', '+faststart',
     '-y',
     f'compilation/{formatted_end_date}.mp4'
 ])
-
-# Clean up temporary normalized files
-for f in normalized_files:
-    f.unlink()
 
 # Generate bookmark report
 template = Template(Path('templates/bookmark_report.md.j2').read_text())
