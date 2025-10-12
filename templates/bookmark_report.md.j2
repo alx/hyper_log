@@ -1,20 +1,26 @@
-# Bookmark Report
+# Video Compilation Report
+
+**Compilation File:** `{{ compilation_file }}`
 **Period:** {{ start_date }} to {{ end_date }}
-**Total Bookmarks:** {{ bookmarks|length }}
+**Total Videos:** {{ total_videos }}
+**Total Duration:** {{ total_duration }}
 
 ---
 
-{% for bookmark in bookmarks %}
-## {{ loop.index }}. {{ bookmark.title or 'Untitled' }}
+## Table of Contents
 
-**URL:** {{ bookmark.content.url }}
-**Created:** {{ bookmark.createdAt }}
-{% if bookmark.content.author %}**Author:** {{ bookmark.content.author }}  {% endif %}
-{% if bookmark.content.publisher %}**Publisher:** {{ bookmark.content.publisher }}  {% endif %}
-{% if bookmark.content.description %}**Description:** {{ bookmark.content.description }}  {% endif %}
-{% if bookmark.tags %}**Tags:** {{ bookmark.tags|map(attribute='name')|join(', ') }}  {% endif %}
-{% if bookmark.note %}**Note:** {{ bookmark.note }}  {% endif %}
+{% for video in videos %}
+### {{ video.index }}. [{{ video.timestamp }}] {{ video.title }}
 
----
+**⏱️ Timestamp:** `{{ video.timestamp }}` ({{ video.duration }})
+**🔗 Source:** [{{ video.url }}]({{ video.url }})
 
 {% endfor %}
+
+---
+
+## Quick Jump Links
+
+{% for video in videos -%}
+[{{ video.index }}. {{ video.timestamp }}](#{{ video.index }}-{{ video.timestamp }}-{{ video.title|lower|replace(' ', '-')|replace('[', '')|replace(']', '')|replace('(', '')|replace(')', '')|replace('|', '')|replace('/', '')|replace('\\', '')|replace(':', '')|replace('?', '')|replace('!', '')|replace(',', '')|replace('.', '')|replace("'", '')|replace('"', '') }}){{ ' | ' if not loop.last else '' }}
+{%- endfor %}
