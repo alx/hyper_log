@@ -109,7 +109,19 @@ print(f"   Size: {video_file.stat().st_size / 1024 / 1024:.2f} MB")
 description_file = Path(str(video_file).replace('.mp4', '.md'))
 print(f"📄 Reading description from: {description_file}")
 description = description_file.read_text()
-print(f"   Description length: {len(description)} characters")
+print(f"   Original description length: {len(description)} characters")
+
+# Truncate description if needed (YouTube limit: 5000 characters)
+MAX_DESCRIPTION_LENGTH = 4900  # Safe limit with room for truncation message
+if len(description) > MAX_DESCRIPTION_LENGTH:
+    # Find the last newline before the limit to avoid cutting mid-line
+    truncate_at = description.rfind('\n', 0, MAX_DESCRIPTION_LENGTH)
+    if truncate_at == -1:
+        truncate_at = MAX_DESCRIPTION_LENGTH
+    description = description[:truncate_at] + "\n\n[Description truncated - see full report]"
+    print(f"   ⚠️  Description truncated to: {len(description)} characters")
+else:
+    print(f"   ✓ Description within limit: {len(description)} characters")
 
 # Upload video to YouTube
 print("\n📤 Starting upload to YouTube...")
