@@ -1,26 +1,10 @@
-# Video Compilation Report
+# Weekly Video Compilation
 
-**Compilation File:** `{{ compilation_file }}`
 **Period:** {{ start_date }} to {{ end_date }}
 **Total Videos:** {{ total_videos }}
-**Total Duration:** {{ total_duration }}
 
 ---
-
-## Table of Contents
 
 {% for video in videos %}
-### {{ video.index }}. [{{ video.timestamp }}] {{ video.title }}
-
-**⏱️ Timestamp:** `{{ video.timestamp }}` ({{ video.duration }})
-**🔗 Source:** [{{ video.url }}]({{ video.url }})
-
+* {{ video.index }}. [{{ video.timestamp }}](#?t={{video.timestamp}}) [{{ video.title }}]({{ video.url }})
 {% endfor %}
-
----
-
-## Quick Jump Links
-
-{% for video in videos -%}
-[{{ video.index }}. {{ video.timestamp }}](#{{ video.index }}-{{ video.timestamp }}-{{ video.title|lower|replace(' ', '-')|replace('[', '')|replace(']', '')|replace('(', '')|replace(')', '')|replace('|', '')|replace('/', '')|replace('\\', '')|replace(':', '')|replace('?', '')|replace('!', '')|replace(',', '')|replace('.', '')|replace("'", '')|replace('"', '') }}){{ ' | ' if not loop.last else '' }}
-{%- endfor %}

@@ -51,6 +51,7 @@ import re
 import subprocess
 import requests
 import argparse
+import json
 from datetime import datetime, timedelta
 from pathlib import Path
 from dotenv import load_dotenv
@@ -100,7 +101,8 @@ if not args.merge_only:
     ).json()
 
     # Save raw response
-    Path('karakeep_response.json').write_text(__import__('json').dumps(response, indent=2))
+    Path('compilation').mkdir(exist_ok=True)
+    Path(f'compilation/{formatted_end_date}_karakeep.json').write_text(json.dumps(response, indent=2))
 
     # Extract bookmarks
     bookmarks = response.get('bookmarks', [])
@@ -150,6 +152,9 @@ if not args.merge_only:
             if not from_token or (matrix_resp.get('chunk', [{}])[-1].get('origin_server_ts', 0) < start_ts):
                 break
 
+    # Save Matrix URLs
+    Path(f'compilation/{formatted_end_date}_matrix.json').write_text(json.dumps(matrix_urls, indent=2))
+
     # Deduplicate URLs from both sources
     urls = list(set(urls + matrix_urls))
 
@@ -157,14 +162,58 @@ if not args.merge_only:
     Path(f'downloads/{formatted_end_date}').mkdir(parents=True, exist_ok=True)
     Path(f'downloads/{formatted_end_date}/normalized').mkdir(parents=True, exist_ok=True)
 
+    # Dictionary to store video metadata: video_id -> {title, url, duration}
+    video_metadata = {}
+
     # Download videos using yt-dlp
     for url in urls:
+        # Extract metadata to check duration before downloading
+        result = subprocess.run([
+            'yt-dlp',
+            '-j',
+            '--cookies-from-browser', 'firefox',
+            url
+        ], capture_output=True, text=True)
+
+        try:
+            metadata = json.loads(result.stdout)
+            duration = metadata.get('duration')
+
+            if duration is None:
+                print(f"Warning: Could not extract duration for {url}, skipping")
+                continue
+
+            if duration > 180:
+                print(f"Skipping {url}: duration {duration}s exceeds 180s limit")
+                continue
+
+            # Store video metadata
+            video_id = metadata.get('id', url.split('/')[-1])
+            video_metadata[video_id] = {
+                'title': metadata.get('title', 'Untitled'),
+                'url': metadata.get('webpage_url', url),
+                'duration': duration,
+                'uploader': metadata.get('uploader', 'Unknown')
+            }
+
+            print(f"Downloading {url} (duration: {duration}s)")
+        except (json.JSONDecodeError, ValueError) as e:
+            print(f"Warning: Failed to parse metadata for {url}: {e}, skipping")
+            continue
+
+        # Download the video
         subprocess.run([
             'yt-dlp',
             '--cookies-from-browser', 'firefox',
             '-o', f'downloads/{formatted_end_date}/%(id)s.%(ext)s',
             url
         ])
+
+    # Save video metadata to JSON file
+    Path('compilation').mkdir(exist_ok=True)
+    Path(f'compilation/{formatted_end_date}_metadata.json').write_text(
+        json.dumps(video_metadata, indent=2)
+    )
 
     # Get all downloaded files and filter by duration (max 3 minutes)
     all_files = sorted(Path(f'downloads/{formatted_end_date}').glob('*'))
@@ -189,13 +238,36 @@ else:
     # Skip to merging: use existing files in downloads directory
     files = sorted(Path(f'downloads/{formatted_end_date}').glob('*'))
     filtered_bookmarks = []
+    # Load existing metadata from JSON file
+    metadata_file = Path(f'compilation/{formatted_end_date}_metadata.json')
+    if metadata_file.exists():
+        video_metadata = json.loads(metadata_file.read_text())
+    else:
+        print("Warning: No metadata file found, using filenames as titles")
+        video_metadata = {}  # Initialize empty metadata dict for merge-only mode
 
 # Re-encode all videos to uniform format (H.264/AAC/MP4) with consistent dimensions
 normalized_files = []
 for idx, f in enumerate(files):
+    # Skip directories
+    if not f.is_file():
+        continue
+
     print(f"{idx} - {f}")
-    normalized_path = Path(f'downloads/{formatted_end_date}/normalized/{f.name}')
-    if not normalized_path.exists():
+
+    # Always output as .mp4 for H.264/AAC compatibility
+    normalized_path = Path(f'downloads/{formatted_end_date}/normalized/{f.stem}.mp4')
+
+    # Check if normalized file exists and is valid (> 1KB)
+    needs_normalization = True
+    if normalized_path.exists():
+        if normalized_path.stat().st_size > 1024:
+            needs_normalization = False
+        else:
+            print(f"Warning: Found corrupted normalized file {normalized_path.name}, re-normalizing...")
+            normalized_path.unlink()
+
+    if needs_normalization:
         result = subprocess.run([
             'ffmpeg',
             '-i', str(f),
@@ -216,11 +288,73 @@ for idx, f in enumerate(files):
         ])
         if result.returncode != 0:
             print(f"Warning: Failed to normalize {f}")
-    if normalized_path.exists():
+
+    # Only add files that exist and are valid (> 1KB)
+    if normalized_path.exists() and normalized_path.stat().st_size > 1024:
         normalized_files.append(normalized_path)
 
+# Calculate timestamps for each video in the compilation
+compilation_videos = []
+cumulative_timestamp = 0.0
+
+for video_file in normalized_files:
+    # Get duration of normalized video
+    result = subprocess.run([
+        'ffprobe',
+        '-v', 'error',
+        '-show_entries', 'format=duration',
+        '-of', 'default=noprint_wrappers=1:nokey=1',
+        str(video_file)
+    ], capture_output=True, text=True)
+
+    try:
+        duration = float(result.stdout.strip())
+    except (ValueError, AttributeError):
+        duration = 0.0
+
+    # Extract video_id from filename (stem without extension)
+    video_id = video_file.stem
+
+    # Get metadata if available, otherwise use filename
+    metadata = video_metadata.get(video_id, {
+        'title': video_id,
+        'url': f'https://unknown/{video_id}',
+        'uploader': 'Unknown'
+    })
+
+    # Format timestamp as HH:MM:SS
+    hours = int(cumulative_timestamp // 3600)
+    minutes = int((cumulative_timestamp % 3600) // 60)
+    seconds = int(cumulative_timestamp % 60)
+    timestamp_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+    # Format duration as MM:SS
+    dur_minutes = int(duration // 60)
+    dur_seconds = int(duration % 60)
+    duration_str = f"{dur_minutes:02d}:{dur_seconds:02d}"
+
+    compilation_videos.append({
+        'index': len(compilation_videos) + 1,
+        'title': metadata['title'],
+        'url': metadata['url'],
+        'uploader': metadata.get('uploader', 'Unknown'),
+        'timestamp': timestamp_str,
+        'timestamp_seconds': int(cumulative_timestamp),
+        'duration': duration_str,
+        'duration_seconds': duration,
+        'video_id': video_id
+    })
+
+    cumulative_timestamp += duration
+
+# Calculate total compilation duration
+total_hours = int(cumulative_timestamp // 3600)
+total_minutes = int((cumulative_timestamp % 3600) // 60)
+total_seconds = int(cumulative_timestamp % 60)
+total_duration_str = f"{total_hours:02d}:{total_minutes:02d}:{total_seconds:02d}"
+
 # Create file list for ffmpeg using normalized files
-Path('filelist.txt').write_text('\n'.join(
+Path(f'compilation/{formatted_end_date}_filelist.txt').write_text('\n'.join(
     f"file '{str(f.resolve()).replace(chr(39), chr(39)+chr(92)+chr(39)+chr(39))}'"
     for f in normalized_files
 ))
@@ -233,7 +367,7 @@ subprocess.run([
     'ffmpeg',
     '-f', 'concat',
     '-safe', '0',
-    '-i', 'filelist.txt',
+    '-i', f'compilation/{formatted_end_date}_filelist.txt',
     '-c', 'copy',
     '-fflags', '+genpts',
     '-movflags', '+faststart',
@@ -241,11 +375,14 @@ subprocess.run([
     f'compilation/{formatted_end_date}.mp4'
 ])
 
-# Generate bookmark report
+# Generate compilation report
 template = Template(Path('templates/bookmark_report.md.j2').read_text())
 report = template.render(
     start_date=args.start_date,
     end_date=args.end_date,
-    bookmarks=filtered_bookmarks
+    videos=compilation_videos,
+    total_duration=total_duration_str,
+    total_videos=len(compilation_videos),
+    compilation_file=f'{formatted_end_date}.mp4'
 )
 Path(f'compilation/{formatted_end_date}.md').write_text(report)
