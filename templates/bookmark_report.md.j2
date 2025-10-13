@@ -6,5 +6,5 @@
 ---
 
 {% for video in videos %}
-* {{ video.index }}. [{{ video.timestamp }}](#?t={{video.timestamp}}) [{{ video.title }}]({{ video.url }})
+* {{ video.index }}. [{{ video.timestamp }}] {{ video.title }}
 {% endfor %}
