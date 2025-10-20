@@ -42,6 +42,7 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
+from google.auth.exceptions import RefreshError
 
 # Load environment variables
 load_dotenv()
@@ -65,8 +66,13 @@ else:
 if not creds or not creds.valid:
     if creds and creds.expired and creds.refresh_token:
         print("🔄 Refreshing expired credentials...")
-        creds.refresh(Request())
-    else:
+        try:
+            creds.refresh(Request())
+        except RefreshError:
+            print("⚠️  Refresh token expired/revoked. Re-authenticating...")
+            creds = None
+
+    if not creds or not creds.valid:
         print("🔐 Starting OAuth flow...")
         credentials_data = {
             'installed': {
